@@ -13,7 +13,7 @@ class SECFinding(BaseModel):
 
 class SECFindings(BaseModel):
     status: AgentStatus
-    findings: list[SECFinding] = []
+    findings: list[SECFinding] = Field(default_factory=list)
     accession: str | None = None
     error: str | None = None
 
@@ -44,7 +44,7 @@ class ResearchReport(BaseModel):
     justification: str
     company_overview: str
     financial_health: str
-    key_risks: list[str] = []
+    key_risks: list[str] = Field(default_factory=list)
     news_summary: str | None = None
 
 

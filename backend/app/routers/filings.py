@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from app.config import get_settings
+from app.limiter import limiter
+from app.observability.logging import get_logger
 from app.schemas.filings import (
     IngestRequest,
     IngestResponse,
@@ -14,10 +17,13 @@ from app.services.chunker import chunk_filing
 from app.services.embeddings import embed_query, embed_texts
 
 router = APIRouter()
+log = get_logger(__name__)
 
 
 @router.post("/ingest", response_model=IngestResponse)
-async def ingest_filing(req: IngestRequest) -> IngestResponse:
+@limiter.limit(lambda: get_settings().rate_limit_filings)
+async def ingest_filing(request: Request, req: IngestRequest) -> IngestResponse:
+    log.info("ingest_started", extra={"ticker": req.ticker, "form": req.form})
     try:
         if req.form == "10-K":
             filing = await sec_client.fetch_latest_10k(req.ticker)
@@ -26,6 +32,7 @@ async def ingest_filing(req: IngestRequest) -> IngestResponse:
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
+        log.exception("ingest_sec_failed", extra={"ticker": req.ticker})
         raise HTTPException(status_code=502, detail=f"SEC fetch failed: {e}") from e
 
     chunks = chunk_filing(filing)
@@ -34,6 +41,15 @@ async def ingest_filing(req: IngestRequest) -> IngestResponse:
 
     vectors = await embed_texts([c.text for c in chunks])
     indexed = await vectorstore.upsert_chunks(filing.ticker, chunks, vectors)
+    log.info(
+        "ingest_completed",
+        extra={
+            "ticker": filing.ticker,
+            "form": filing.form,
+            "accession": filing.accession,
+            "chunks_indexed": indexed,
+        },
+    )
 
     return IngestResponse(
         ticker=filing.ticker,
@@ -45,7 +61,8 @@ async def ingest_filing(req: IngestRequest) -> IngestResponse:
 
 
 @router.post("/query", response_model=QueryResponse)
-async def query_filing(req: QueryRequest) -> QueryResponse:
+@limiter.limit(lambda: get_settings().rate_limit_filings)
+async def query_filing(request: Request, req: QueryRequest) -> QueryResponse:
     vector = await embed_query(req.question)
     matches = await vectorstore.query(req.ticker, vector, top_k=req.top_k)
 

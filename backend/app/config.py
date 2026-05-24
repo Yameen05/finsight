@@ -31,7 +31,25 @@ class Settings(BaseSettings):
     embedding_dim: int = Field(default=1536)
     llm_model: str = Field(default="gpt-4o-mini")
 
+    # OpenAI public list price (USD per 1M tokens) for cost tracking. Defaults
+    # target gpt-4o-mini / text-embedding-3-small. Override if you swap models.
+    cost_input_per_mtok_usd: float = Field(default=0.15)
+    cost_output_per_mtok_usd: float = Field(default=0.60)
+    cost_embed_per_mtok_usd: float = Field(default=0.02)
+
     cors_origins: str = Field(default="http://localhost:5173")
+
+    # --- Production ops ---
+    log_level: str = Field(default="INFO")
+    # If set, requests must carry header X-API-Key: <value>. Empty = open.
+    finsight_api_key: str = Field(default="")
+    # Per-IP rate limits (slowapi syntax: "<count>/<window>")
+    rate_limit_research: str = Field(default="30/minute")
+    rate_limit_filings: str = Field(default="60/minute")
+    # SQLite database for research history (sync URI converted to async at runtime).
+    database_url: str = Field(default="sqlite+aiosqlite:///./data/finsight.db")
+    # Soft request deadline (seconds). LLM calls inside agents have their own timeouts.
+    request_timeout_seconds: int = Field(default=120, ge=5, le=600)
 
     @property
     def cors_origins_list(self) -> list[str]:

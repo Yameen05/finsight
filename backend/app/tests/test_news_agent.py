@@ -25,13 +25,20 @@ def _fake_openai_returning(content: str):
     return SimpleNamespace(chat=_Chat())
 
 
+def _safe_clear(fn):
+    if hasattr(fn, "cache_clear"):
+        fn.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def reset_caches():
     get_settings.cache_clear()
-    news_agent_mod._client.cache_clear()
+    _safe_clear(news_agent_mod._client)
+    news_agent_mod._reset_news_cache()
     yield
     get_settings.cache_clear()
-    news_agent_mod._client.cache_clear()
+    _safe_clear(news_agent_mod._client)
+    news_agent_mod._reset_news_cache()
 
 
 async def test_news_agent_skips_when_key_missing(monkeypatch):

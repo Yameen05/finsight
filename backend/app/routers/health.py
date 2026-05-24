@@ -1,8 +1,85 @@
-from fastapi import APIRouter
+"""Liveness + readiness probes.
+
+  GET /health        → 200 always (process is up)
+  GET /health/ready  → 200 only if all configured upstreams reachable;
+                       503 otherwise, with a per-dependency breakdown.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import httpx
+from fastapi import APIRouter, Response
+
+from app.config import get_settings
+from app.observability.logging import get_logger
 
 router = APIRouter(tags=["health"])
+log = get_logger(__name__)
 
 
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+async def _check_openai() -> tuple[bool, str]:
+    settings = get_settings()
+    if not settings.openai_api_key:
+        return False, "OPENAI_API_KEY not set"
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=5.0)
+        await client.models.list()
+        return True, "reachable"
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}: {e}"
+
+
+async def _check_pinecone() -> tuple[bool, str]:
+    settings = get_settings()
+    if not settings.pinecone_api_key:
+        return False, "PINECONE_API_KEY not set"
+    try:
+        from pinecone import Pinecone
+
+        pc = Pinecone(api_key=settings.pinecone_api_key)
+        names = pc.list_indexes().names()
+        return True, f"reachable ({len(names)} indexes)"
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}: {e}"
+
+
+async def _check_newsapi() -> tuple[bool, str]:
+    settings = get_settings()
+    if not settings.news_api_key:
+        return True, "skipped (no key — optional)"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get(
+                "https://newsapi.org/v2/everything",
+                params={"q": "test", "pageSize": 1, "apiKey": settings.news_api_key},
+            )
+            if r.status_code == 200:
+                return True, "reachable"
+            return False, f"HTTP {r.status_code}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}: {e}"
+
+
+@router.get("/health/ready")
+async def ready(response: Response) -> dict:
+    openai_ok, news_ok, pc_ok = await asyncio.gather(
+        _check_openai(), _check_newsapi(), _check_pinecone()
+    )
+    checks = {
+        "openai": {"ok": openai_ok[0], "detail": openai_ok[1]},
+        "newsapi": {"ok": news_ok[0], "detail": news_ok[1]},
+        "pinecone": {"ok": pc_ok[0], "detail": pc_ok[1]},
+    }
+    all_ok = all(c["ok"] for c in checks.values())
+    if not all_ok:
+        response.status_code = 503
+    return {"status": "ready" if all_ok else "degraded", "checks": checks}

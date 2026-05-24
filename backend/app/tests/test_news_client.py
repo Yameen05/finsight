@@ -23,7 +23,7 @@ def set_news_key(monkeypatch):
 
 async def test_fetch_recent_articles_happy_path(httpx_mock: HTTPXMock):
     httpx_mock.add_response(
-        url__startswith=news_client.NEWS_API_URL,
+        url=_URL_RE,
         json={
             "status": "ok",
             "totalResults": 2,
@@ -53,7 +53,7 @@ async def test_fetch_recent_articles_happy_path(httpx_mock: HTTPXMock):
 
 async def test_fetch_drops_empty_titles(httpx_mock: HTTPXMock):
     httpx_mock.add_response(
-        url__startswith=news_client.NEWS_API_URL,
+        url=_URL_RE,
         json={
             "status": "ok",
             "articles": [
@@ -68,7 +68,7 @@ async def test_fetch_drops_empty_titles(httpx_mock: HTTPXMock):
 
 async def test_fetch_raises_on_http_error(httpx_mock: HTTPXMock):
     httpx_mock.add_response(
-        url__startswith=news_client.NEWS_API_URL,
+        url=_URL_RE,
         status_code=429,
         text="Rate limit",
     )
@@ -78,7 +78,7 @@ async def test_fetch_raises_on_http_error(httpx_mock: HTTPXMock):
 
 async def test_fetch_raises_on_api_error_body(httpx_mock: HTTPXMock):
     httpx_mock.add_response(
-        url__startswith=news_client.NEWS_API_URL,
+        url=_URL_RE,
         json={"status": "error", "code": "apiKeyInvalid", "message": "bad key"},
     )
     with pytest.raises(news_client.NewsAPIError, match="apiKeyInvalid"):

@@ -77,6 +77,7 @@ export interface ResearchResponse {
 }
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? "/api";
+const SSE_MESSAGE_BOUNDARY = /\r?\n\r?\n/;
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -103,13 +104,148 @@ export const api = {
   query: (ticker: string, question: string, top_k = 5) =>
     postJson<QueryResponse>("/filings/query", { ticker, question, top_k }),
 
-  research: async (ticker: string): Promise<ResearchResponse> => {
+  research: async (ticker: string): Promise<ResearchEnvelope> => {
     const res = await fetch(`${BASE_URL}/research/${encodeURIComponent(ticker)}`, {
       method: "POST",
     });
     if (!res.ok) {
       throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
     }
-    return (await res.json()) as ResearchResponse;
+    return (await res.json()) as ResearchEnvelope;
+  },
+
+  history: async (ticker: string, limit = 20): Promise<HistoryResponse> => {
+    const res = await fetch(
+      `${BASE_URL}/research/history/${encodeURIComponent(ticker)}?limit=${limit}`,
+    );
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
+    }
+    return (await res.json()) as HistoryResponse;
+  },
+
+  ready: async () => {
+    const res = await fetch(`${BASE_URL}/health/ready`);
+    return { status: res.status, body: (await res.json()) as ReadinessBody };
   },
 };
+
+export interface CostBreakdown {
+  prompt_tokens: number;
+  completion_tokens: number;
+  embedding_tokens: number;
+  total_usd: number;
+}
+
+export interface ResearchEnvelope {
+  request_id: string;
+  duration_ms: number;
+  cost: CostBreakdown;
+  persisted_id: number | null;
+  result: ResearchResponse;
+}
+
+export interface HistoryEntry {
+  id: number;
+  ticker: string;
+  recommendation: "Buy" | "Hold" | "Sell" | "Pending";
+  justification: string;
+  sentiment_score: number | null;
+  duration_ms: number | null;
+  cost_usd: number | null;
+  created_at: string;
+}
+
+export interface HistoryResponse {
+  ticker: string;
+  runs: HistoryEntry[];
+}
+
+export interface ReadinessCheck {
+  ok: boolean;
+  detail: string;
+}
+
+export interface ReadinessBody {
+  status: "ready" | "degraded";
+  checks: Record<string, ReadinessCheck>;
+}
+
+// ----- SSE streaming -----
+
+export type StreamEvent =
+  | { event: "started"; data: { ticker: string; request_id: string } }
+  | {
+      event: "node_completed";
+      data: { node: string; payload: Record<string, unknown> };
+    }
+  | {
+      event: "completed";
+      data: {
+        request_id: string;
+        duration_ms: number;
+        cost: CostBreakdown;
+        persisted_id: number | null;
+        result: ResearchResponse;
+      };
+    }
+  | { event: "error"; data: { detail: string; error_type: string } };
+
+/**
+ * Stream a research run via SSE.
+ * Uses fetch+ReadableStream so we can POST-style configure headers if needed
+ * (EventSource is GET-only and we want consistent header handling).
+ */
+export async function streamResearch(
+  ticker: string,
+  onEvent: (e: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(
+    `${BASE_URL}/research/${encodeURIComponent(ticker)}/stream`,
+    { headers: { Accept: "text/event-stream" }, signal },
+  );
+  if (!res.ok || !res.body) {
+    throw new Error(`${res.status} ${res.statusText}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buf = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    // SSE allows either LF or CRLF line endings; consume complete messages.
+    let match = SSE_MESSAGE_BOUNDARY.exec(buf);
+    while (match) {
+      const raw = buf.slice(0, match.index);
+      buf = buf.slice(match.index + match[0].length);
+      const parsed = parseSseMessage(raw);
+      if (parsed) onEvent(parsed);
+      match = SSE_MESSAGE_BOUNDARY.exec(buf);
+    }
+  }
+}
+
+function parseSseMessage(raw: string): StreamEvent | null {
+  const lines = raw.replace(/\r\n/g, "\n").split("\n");
+  let eventName = "message";
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  }
+  if (dataLines.length === 0) return null;
+  try {
+    const data = JSON.parse(dataLines.join("\n"));
+    return { event: eventName as StreamEvent["event"], data } as StreamEvent;
+  } catch {
+    return null;
+  }
+}

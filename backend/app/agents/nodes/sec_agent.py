@@ -18,9 +18,13 @@ from openai import AsyncOpenAI
 
 from app.agents.state import ResearchState
 from app.config import get_settings
+from app.observability.cost import record_chat
+from app.observability.logging import get_logger
 from app.schemas.research import SECFinding, SECFindings
 from app.services import vectorstore
 from app.services.embeddings import embed_query
+
+log = get_logger(__name__)
 
 CANONICAL_QUESTIONS: list[str] = [
     "What are the principal risk factors disclosed in the filing?",
@@ -40,15 +44,16 @@ _SUMMARY_SYSTEM = (
 
 @lru_cache(maxsize=1)
 def _client() -> AsyncOpenAI:
-    return AsyncOpenAI(api_key=get_settings().openai_api_key)
+    return AsyncOpenAI(api_key=get_settings().openai_api_key, timeout=60.0)
 
 
 async def _summarize(question: str, chunks: list[str]) -> str:
     if not chunks:
         return "No relevant excerpts were retrieved."
     joined = "\n\n---\n\n".join(c[:1200] for c in chunks)
+    model = get_settings().llm_model
     resp = await _client().chat.completions.create(
-        model=get_settings().llm_model,
+        model=model,
         messages=[
             {"role": "system", "content": _SUMMARY_SYSTEM},
             {
@@ -59,6 +64,7 @@ async def _summarize(question: str, chunks: list[str]) -> str:
         temperature=0.1,
         max_tokens=200,
     )
+    record_chat(model, resp)
     return (resp.choices[0].message.content or "").strip()
 
 

@@ -1,158 +1,285 @@
 # FinSight
 
-A multi-agent financial research system. Enter a ticker, get a structured
-research report (Buy / Hold / Sell) synthesized from SEC filings, news
-sentiment, and financial metrics.
+[![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.2-7E57C2)](https://langchain-ai.github.io/langgraph/)
+[![React](https://img.shields.io/badge/React-18-61DAFB)](https://react.dev/)
+[![Tests](https://img.shields.io/badge/tests-52%20passing-brightgreen)](backend/app/tests)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-> **Phase 2 (current)** — LangGraph orchestrator wired up: a coordinator runs
-> the SEC RAG agent (real), plus News and Metrics agents (stubs) in parallel,
-> then a synthesizer node produces a structured report skeleton.
->
-> Phase 1 delivered the SEC EDGAR → Pinecone RAG vertical slice. NewsAPI,
-> yFinance, and the real Buy/Hold/Sell decision logic arrive in later phases.
-> See **Roadmap** below.
+FinSight is a full-stack, multi-agent equity research app. Enter a ticker and
+it builds a structured research report from SEC filing retrieval, recent news
+sentiment, and live financial metrics.
 
-## Stack
+> This project is for software demonstration and research workflow exploration.
+> It is not financial advice.
 
-| Layer | Choice |
-|---|---|
-| Backend | Python 3.11, FastAPI, Uvicorn, httpx |
-| Frontend | Vite + React 18 + TypeScript + Tailwind CSS |
-| Embeddings | OpenAI `text-embedding-3-small` (1536 dims) |
-| LLM | OpenAI `gpt-4o-mini` (used from Phase 2) |
-| Vector DB | Pinecone serverless |
-| Chunking | LangChain `RecursiveCharacterTextSplitter` |
-| Orchestration | LangGraph (parallel fan-out + fan-in synthesizer) |
-| Containerization | Docker Compose |
+![FinSight dashboard](docs/assets/finsight-dashboard.jpg)
+
+## What It Does
+
+- Ingests the latest SEC `10-K` or `10-Q` filing for a ticker.
+- Chunks and embeds filing text into Pinecone for per-ticker retrieval.
+- Runs a LangGraph research pipeline with specialist agents for:
+  - SEC filing RAG
+  - recent news sentiment
+  - financial metrics from yfinance
+- Streams agent progress to the browser over Server-Sent Events.
+- Synthesizes a final `Buy`, `Hold`, `Sell`, or `Pending` report with concrete
+  justification.
+- Persists completed research runs to SQLite for history and comparison.
+- Tracks OpenAI token usage and estimated cost per research request.
+
+## Architecture
+
+```text
+React + TypeScript SPA
+  live progress, filing ingest, ad-hoc RAG query, report history
+        |
+        | REST + Server-Sent Events
+        v
+FastAPI backend
+  request IDs, optional API-key auth, rate limiting, CORS, JSON logs
+        |
+        v
+LangGraph StateGraph
+  START
+    |--------------------|----------------------|
+    v                    v                      v
+  SEC agent           News agent             Metrics agent
+  Pinecone RAG        NewsAPI + VADER        yfinance TTM metrics
+    |--------------------|----------------------|
+                         v
+                   Synthesizer
+                   OpenAI JSON report
+                         |
+                         v
+                   SQLite research_runs
+```
+
+The backend is designed to degrade cleanly. Missing NewsAPI credentials skip the
+news agent; missing filing vectors skip the SEC agent; upstream failures return
+typed `error` payloads instead of crashing the whole graph.
+
+## Tech Stack
+
+| Layer | Tools |
+| --- | --- |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS |
+| API | FastAPI, Uvicorn, Gunicorn, SlowAPI, SSE Starlette |
+| Agent orchestration | LangGraph `StateGraph` |
+| LLM and embeddings | OpenAI chat completions and embeddings |
+| Retrieval | Pinecone serverless index, namespace per ticker |
+| Market/news data | SEC EDGAR, NewsAPI, VADER, yfinance |
+| Persistence | SQLAlchemy async ORM, SQLite by default |
+| Ops | Docker, Docker Compose, nginx SPA proxy, structured JSON logs |
+| Tests | pytest, pytest-asyncio, pytest-httpx, ruff, TypeScript build |
+
+## Repository Layout
+
+```text
+finsight/
+├── backend/
+│   ├── app/
+│   │   ├── agents/              # LangGraph state and agent nodes
+│   │   ├── observability/       # JSON logs and OpenAI cost tracking
+│   │   ├── persistence/         # async SQLAlchemy history store
+│   │   ├── routers/             # health, filings, research endpoints
+│   │   ├── schemas/             # Pydantic API models
+│   │   ├── services/            # SEC, Pinecone, OpenAI, NewsAPI, yfinance
+│   │   └── tests/               # mocked backend test suite
+│   ├── Dockerfile
+│   ├── Dockerfile.dev
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── api/client.ts        # typed REST and SSE client
+│   │   ├── components/          # input, progress, report, history panels
+│   │   └── App.tsx
+│   ├── Dockerfile
+│   ├── Dockerfile.dev
+│   └── nginx.conf
+├── docs/assets/
+│   └── finsight-dashboard.jpg
+├── docker-compose.yml
+├── docker-compose.dev.yml
+├── .env.example
+└── Makefile
+```
 
 ## Quickstart
 
-### 1. Configure environment
+### 1. Configure Environment
 
 ```bash
-cd ~/Documents/Projects/finsight
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+Fill in at least:
 
-- `OPENAI_API_KEY` — your OpenAI key
-- `PINECONE_API_KEY` — your Pinecone key
-- `SEC_USER_AGENT` — `"FinSight Research <your.email>"` (**required by SEC**)
+```bash
+OPENAI_API_KEY=...
+PINECONE_API_KEY=...
+SEC_USER_AGENT="FinSight Research your.email@example.com"
+```
 
-### 2. Start the stack
+Optional:
+
+```bash
+NEWS_API_KEY=...
+FINSIGHT_API_KEY=...
+```
+
+`FINSIGHT_API_KEY` enables a simple `X-API-Key` gate on non-health routes. Leave
+it empty for local development.
+
+### 2. Run With Docker
 
 ```bash
 docker compose up --build
 ```
 
-- Backend → http://localhost:8000 · OpenAPI docs at http://localhost:8000/docs
-- Frontend → http://localhost:5173
+- Frontend: http://localhost:8080
+- Backend: http://localhost:8000
+- API docs: http://localhost:8000/docs
 
-### 3. Ingest a filing and query it
-
-UI: open http://localhost:5173, type `AAPL`, click **Ingest** (takes ~30–60s for a full 10-K), type a question, click **Query**.
-
-curl equivalent:
+### 3. Run With Hot Reload
 
 ```bash
-curl -X POST localhost:8000/filings/ingest \
-  -H 'Content-Type: application/json' \
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+- Frontend with Vite HMR: http://localhost:5173
+- Backend API: http://localhost:8000
+
+## API Overview
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness probe |
+| `GET` | `/health/ready` | Dependency readiness for OpenAI, Pinecone, and NewsAPI |
+| `POST` | `/filings/ingest` | Fetch SEC filing, chunk, embed, and upsert to Pinecone |
+| `POST` | `/filings/query` | Query previously ingested filing chunks |
+| `POST` | `/research/{ticker}` | Run the full research graph and persist the result |
+| `GET` | `/research/{ticker}/stream` | Stream agent progress and final result via SSE |
+| `GET` | `/research/history/{ticker}` | Return recent persisted research runs |
+
+Example:
+
+```bash
+curl -X POST http://localhost:8000/filings/ingest \
+  -H "Content-Type: application/json" \
   -d '{"ticker":"AAPL","form":"10-K"}'
-# → {"ticker":"AAPL","form":"10-K","accession":"…","filing_date":"…","chunks_indexed":312}
 
-curl -X POST localhost:8000/filings/query \
-  -H 'Content-Type: application/json' \
-  -d '{"ticker":"AAPL","question":"What are the principal risks?","top_k":5}'
+curl -N http://localhost:8000/research/AAPL/stream
 ```
 
-### 4. Run the full research pipeline
+## Configuration
 
-The LangGraph orchestrator runs the SEC RAG agent + News/Metrics stubs in
-parallel and synthesizes a structured report. Requires the ticker's filing to
-already be ingested.
+| Variable | Required | Description |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | Yes | Chat completion and embedding calls |
+| `PINECONE_API_KEY` | Yes | Filing vector store |
+| `PINECONE_INDEX_NAME` | No | Defaults to `finsight-filings` |
+| `PINECONE_CLOUD` | No | Defaults to `aws` |
+| `PINECONE_REGION` | No | Defaults to `us-east-1` |
+| `SEC_USER_AGENT` | Yes | SEC EDGAR requires an app/contact user agent |
+| `NEWS_API_KEY` | No | Enables the news agent; missing key skips news |
+| `NEWS_LOOKBACK_DAYS` | No | Defaults to `30` |
+| `NEWS_MAX_ARTICLES` | No | Defaults to `30` |
+| `EMBEDDING_MODEL` | No | Defaults to `text-embedding-3-small` |
+| `LLM_MODEL` | No | Defaults to `gpt-4o-mini` |
+| `FINSIGHT_API_KEY` | No | Optional API-key protection |
+| `RATE_LIMIT_RESEARCH` | No | Defaults to `30/minute` |
+| `RATE_LIMIT_FILINGS` | No | Defaults to `60/minute` |
+| `DATABASE_URL` | No | Defaults to local SQLite at `./data/finsight.db` |
+| `CORS_ORIGINS` | No | Comma-separated allowed origins |
+
+## Local Development
+
+Backend:
 
 ```bash
-curl -X POST localhost:8000/research/AAPL
-# → {
-#     "ticker": "AAPL",
-#     "sec": { "status": "ok", "findings": [...], "accession": "..." },
-#     "news": { "status": "not_implemented", ... },
-#     "metrics": { "status": "not_implemented", ... },
-#     "report": { "recommendation": "Pending", "justification": "...", ... }
-#   }
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
 ```
 
-Or click **Run full research** in the UI.
-
-## Important: SEC User-Agent
-
-The SEC EDGAR API blocks requests without a descriptive `User-Agent` header that
-includes a contact email. Set `SEC_USER_AGENT` in `.env` before ingesting or
-you'll get HTTP 403.
-
-## Project Layout
-
-```
-finsight/
-├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── pyproject.toml
-│   └── app/
-│       ├── main.py              FastAPI app + CORS
-│       ├── config.py            pydantic-settings (.env loader)
-│       ├── routers/
-│       │   ├── health.py        GET  /health
-│       │   ├── filings.py       POST /filings/ingest, /filings/query
-│       │   └── research.py      POST /research/{ticker}  (Phase 2 stub)
-│       ├── services/
-│       │   ├── sec_client.py    SEC EDGAR fetcher (CIK lookup, 10-K/10-Q)
-│       │   ├── chunker.py       RecursiveCharacterTextSplitter wrapper
-│       │   ├── embeddings.py    OpenAI batch embedder
-│       │   └── vectorstore.py   Pinecone serverless wrapper
-│       ├── schemas/             Pydantic request/response models (filings, research)
-│       ├── scripts/             CLI helpers (pinecone_init, fetch_sample)
-│       ├── agents/              LangGraph orchestrator
-│       │   ├── state.py         ResearchState TypedDict
-│       │   ├── graph.py         StateGraph assembly + run_research()
-│       │   └── nodes/           sec_agent (real), news/metrics (stub), synthesizer
-│       └── tests/               pytest unit tests (incl. agent + graph)
-├── frontend/
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── vite.config.ts           proxies /api → backend
-│   └── src/
-│       ├── App.tsx              Ticker input + ingest + query + results
-│       ├── api/client.ts        Typed fetch wrappers
-│       └── components/          TickerInput, QueryResult
-├── docker-compose.yml
-├── Makefile
-├── .env.example
-└── README.md
-```
-
-## Development
-
-`make help` lists all targets. Common ones:
+Frontend:
 
 ```bash
-make dev               # docker compose up --build
-make logs              # tail container logs
-make backend-test      # pytest inside backend/
-make pinecone-init     # create the Pinecone index if it doesn't exist
-make fetch-sample TICKER=AAPL   # sanity-check SEC fetch outside Docker
+cd frontend
+npm install
+npm run dev
 ```
 
-Backend code reloads on save (uvicorn `--reload`).  Frontend has Vite HMR.
+Useful Make targets:
 
-## Roadmap
+```bash
+make backend-test
+make frontend-install
+make pinecone-init
+make fetch-sample TICKER=AAPL
+```
 
-| Phase | Adds |
-|---|---|
-| 1 | Repo, FastAPI, React/TS, Docker, SEC→Pinecone→RAG query |
-| **2 (now)** | LangGraph orchestrator; real SEC RAG agent; News/Metrics stubs; synthesizer; `/research/{ticker}` endpoint; UI report panel |
-| 3 | News & Sentiment agent (NewsAPI) — replace stub |
-| 4 | Financial Metrics agent (yFinance) — replace stub |
-| 5 | Real Buy / Hold / Sell decision logic in synthesizer (all three signals) |
-| 6 | Auth, persistence beyond Pinecone, production Dockerfile, CI |
+## Tests And Checks
+
+```bash
+cd backend
+python -m ruff check app
+python -m pytest -q
+
+cd ../frontend
+npm run lint
+npm run build
+```
+
+Current local verification:
+
+- Backend ruff: passing
+- Backend pytest: `52 passed`
+- Frontend TypeScript/build: passing
+
+## Security And Publish Notes
+
+The repository is intended to be safe to publish with only placeholder
+configuration committed.
+
+- Real credentials belong in `.env`, which is ignored by git.
+- `.env.example` contains empty placeholders only.
+- Docker build contexts ignore `.env`, local virtualenvs, logs, caches, and build
+  outputs.
+- Runtime SQLite files under `backend/data/` or `data/` are ignored.
+- `.claude-flow/` local session state is ignored and should not be committed.
+- TypeScript build-info files are ignored.
+- The backend logs request IDs and operational metadata, but should not log raw
+  API keys.
+- If `FINSIGHT_API_KEY` is set, all non-health/API-doc routes require the
+  `X-API-Key` header.
+
+Before publishing, run:
+
+```bash
+find . -name ".env" -o -name "*.pem" -o -name "*.key" -o -name "*.db" -o -name "*.sqlite"
+rg -n --hidden --glob '!.git/**' --glob '!frontend/node_modules/**' \
+  --glob '!backend/.venv/**' --glob '!frontend/dist/**' \
+  'sk-[A-Za-z0-9]|pcsk_|ghp_|github_pat_|AKIA[0-9A-Z]{16}|BEGIN .*PRIVATE KEY'
+```
+
+## Production Considerations
+
+- Use a real secret manager for API keys.
+- Set `FINSIGHT_API_KEY` or put the backend behind stronger auth before exposing
+  it publicly.
+- Keep `CORS_ORIGINS` narrow.
+- Move from SQLite to Postgres for multi-instance deployments.
+- Add budget/rate controls for upstream OpenAI, Pinecone, NewsAPI, and Yahoo
+  Finance calls.
+- Do not present model output as investment advice without human review and
+  appropriate compliance controls.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

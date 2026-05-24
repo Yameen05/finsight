@@ -94,10 +94,22 @@ export function ReportPanel({ result }: Props) {
 
         <AgentCard title="Financial metrics" status={metrics.status} error={metrics.error}>
           {metrics.revenue !== null && (
-            <Metric label="Revenue" value={`$${(metrics.revenue / 1e9).toFixed(2)}B`} />
+            <Metric label="Revenue (TTM)" value={`$${(metrics.revenue / 1e9).toFixed(1)}B`} />
           )}
-          {metrics.eps !== null && <Metric label="EPS" value={metrics.eps.toFixed(2)} />}
+          {metrics.eps !== null && <Metric label="EPS (TTM)" value={metrics.eps.toFixed(2)} />}
           {metrics.pe_ratio !== null && <Metric label="P/E" value={metrics.pe_ratio.toFixed(1)} />}
+          {metrics.profit_margin !== null && (
+            <Metric label="Profit margin" value={`${(metrics.profit_margin * 100).toFixed(1)}%`} />
+          )}
+          {metrics.debt_to_equity !== null && (
+            <Metric label="Debt / equity" value={metrics.debt_to_equity.toFixed(1)} />
+          )}
+          {metrics.week_52_low !== null && metrics.week_52_high !== null && (
+            <Metric
+              label="52-week range"
+              value={`$${metrics.week_52_low.toFixed(2)} – $${metrics.week_52_high.toFixed(2)}`}
+            />
+          )}
         </AgentCard>
       </div>
     </section>

@@ -11,7 +11,7 @@ Docs: https://newsapi.org/docs/endpoints/everything
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -50,7 +50,7 @@ async def fetch_recent_articles(
     days = days or settings.news_lookback_days
     limit = limit or settings.news_max_articles
 
-    from_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    from_dt = datetime.now(UTC) - timedelta(days=days)
     params = {
         "q": f'"{company_name}"',  # quoted to avoid loose token matches
         "from": from_dt.strftime("%Y-%m-%d"),
