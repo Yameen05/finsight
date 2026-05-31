@@ -20,7 +20,7 @@ const LABELS: Record<AgentKey, string> = {
 
 const DOT: Record<AgentState["status"], { color: string; pulse: boolean; label: string }> = {
   idle: { color: "bg-slate-700", pulse: false, label: "waiting" },
-  running: { color: "bg-amber-400", pulse: true, label: "running" },
+  running: { color: "bg-indigo-400", pulse: true, label: "running" },
   done: { color: "bg-emerald-500", pulse: false, label: "done" },
   error: { color: "bg-rose-500", pulse: false, label: "error" },
 };

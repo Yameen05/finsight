@@ -18,6 +18,10 @@ def _isolated_env(monkeypatch, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setenv("FINSIGHT_API_KEY", "")
+    # Isolate the suite from a developer's real key. Local runs put the OpenAI
+    # key in backend/.env, which pytest (run from backend/) would otherwise load
+    # and then make live API calls (e.g. the readiness probe's models.list()).
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("RATE_LIMIT_RESEARCH", "1000/minute")
     monkeypatch.setenv("RATE_LIMIT_FILINGS", "1000/minute")
     get_settings.cache_clear()

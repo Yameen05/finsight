@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { TickerInput } from "./components/TickerInput";
+import { StockPicker, POPULAR_STOCKS } from "./components/StockPicker";
 import { QueryResultPanel } from "./components/QueryResult";
 import { ReportPanel } from "./components/ReportPanel";
 import { AgentProgress, type AgentKey, type AgentState } from "./components/AgentProgress";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { WelcomeHero } from "./components/WelcomeHero";
+import { ChatPanel } from "./components/ChatPanel";
 import {
   api,
   streamResearch,
@@ -21,6 +23,10 @@ const INITIAL_AGENT_STATES: AgentStates = {
   metrics_agent: { status: "idle" },
   synthesize: { status: "idle" },
 };
+
+function companyName(ticker: string): string {
+  return POPULAR_STOCKS.find((s) => s.ticker === ticker)?.name ?? ticker;
+}
 
 export default function App() {
   const [ticker, setTicker] = useState("AAPL");
@@ -100,10 +106,11 @@ export default function App() {
           if (e.event === "node_completed") {
             const node = e.data.node as AgentKey;
             const payload = e.data.payload;
-            // Extract a 1-line summary from the payload's findings slot.
             let summary = "done";
             for (const k of ["sec", "news", "metrics", "report"]) {
-              const v = (payload as Record<string, unknown>)[k] as Record<string, unknown> | undefined;
+              const v = (payload as Record<string, unknown>)[k] as
+                | Record<string, unknown>
+                | undefined;
               if (v && typeof v === "object") {
                 const stat = (v.status as string) ?? (v.recommendation as string);
                 if (stat) summary = String(stat);
@@ -114,7 +121,9 @@ export default function App() {
             setResearch(e.data.result);
             setMeta({ duration_ms: e.data.duration_ms, cost_usd: e.data.cost.total_usd });
             setStatus(
-              `Report ready · ${e.data.result.report.recommendation} · ${(e.data.duration_ms / 1000).toFixed(1)}s · $${e.data.cost.total_usd.toFixed(4)}`,
+              `Report ready · ${e.data.result.report.recommendation} · ${(
+                e.data.duration_ms / 1000
+              ).toFixed(1)}s · $${e.data.cost.total_usd.toFixed(4)}`,
             );
             setHistoryRefresh((n) => n + 1);
           } else if (e.event === "error") {
@@ -154,96 +163,128 @@ export default function App() {
         };
 
   return (
-    <main className="mx-auto max-w-5xl px-6 py-10">
-      <header className="mb-8 flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">FinSight</h1>
-          <p className="text-sm text-slate-400">
-            Multi-agent stock research · SEC RAG + News sentiment + yfinance
-          </p>
-        </div>
-        <div className="text-right text-xs">
-          <span className={readinessSummary.color}>● {readinessSummary.text}</span>
-          {readiness && (
-            <div className="mt-1 space-y-0.5 text-slate-500">
-              {Object.entries(readiness.checks).map(([k, c]) => (
-                <div key={k}>
-                  <span className={c.ok ? "text-emerald-500" : "text-rose-500"}>
-                    {c.ok ? "✓" : "✗"}
-                  </span>{" "}
-                  {k}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </header>
-
-      <section className="space-y-6 rounded-lg border border-slate-800 bg-slate-900 p-6">
-        <TickerInput
-          ticker={ticker}
-          setTicker={setTicker}
-          form={form}
-          setForm={setForm}
-          onIngest={onIngest}
-          disabled={busy}
-        />
-
-        <div>
-          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
-            Ad-hoc question (single-agent RAG)
-          </label>
-          <textarea
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            rows={2}
-            className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none"
-          />
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              onClick={onQuery}
-              disabled={busy}
-              className="rounded-md bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600 disabled:opacity-50"
-            >
-              Query
-            </button>
-            <button
-              onClick={onResearchStream}
-              disabled={busy}
-              className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
-            >
-              Run full research (streaming)
-            </button>
-            {busy && (
-              <button
-                onClick={onCancel}
-                className="rounded-md border border-rose-700 px-4 py-2 text-sm font-medium text-rose-300 hover:bg-rose-900/30"
-              >
-                Cancel
-              </button>
-            )}
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <nav className="border-b border-slate-900 bg-slate-950/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
+          <div className="flex items-center gap-2">
+            <span className="grid h-7 w-7 place-items-center rounded-md bg-gradient-to-br from-indigo-500 to-cyan-500 text-xs font-bold text-white">
+              F
+            </span>
+            <span className="font-semibold tracking-tight">FinSight</span>
+            <span className="hidden text-xs text-slate-500 sm:inline">
+              · multi-agent equity research
+            </span>
+          </div>
+          <div className="text-right text-xs">
+            <span className={readinessSummary.color} title="Backend readiness">
+              ● {readinessSummary.text}
+            </span>
           </div>
         </div>
+      </nav>
 
-        <AgentProgress states={agents} />
+      <main className="mx-auto max-w-6xl px-6 py-8">
+        <WelcomeHero />
 
-        {status && <p className="text-xs text-slate-400">{status}</p>}
-        {meta && (
-          <p className="text-[11px] text-slate-500">
-            run · {(meta.duration_ms / 1000).toFixed(2)}s · ${meta.cost_usd.toFixed(4)}
-          </p>
-        )}
-      </section>
+        <section className="space-y-6 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              1 · Choose your stock
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Pick from the curated list or use the custom field. “Ingest filing” downloads
+              and indexes the latest SEC filing — only required for SEC-specific questions.
+            </p>
+          </div>
 
-      <ReportPanel result={research} />
-      <QueryResultPanel result={queryResult} />
+          <StockPicker
+            ticker={ticker}
+            setTicker={setTicker}
+            form={form}
+            setForm={setForm}
+            onIngest={onIngest}
+            disabled={busy}
+          />
 
-      <section className="mt-8">
-        <h2 className="mb-2 text-sm font-medium text-slate-300">
-          Recent reports for {ticker}
-        </h2>
-        <HistoryPanel ticker={ticker} refreshKey={historyRefresh} />
-      </section>
-    </main>
+          <div className="border-t border-slate-800 pt-6">
+            <h2 className="text-base font-semibold text-slate-100">
+              2 · Run the analysis
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Full research runs three agents in parallel and synthesizes a recommendation.
+              The ad-hoc query searches only the indexed filing.
+            </p>
+
+            <div className="mt-4">
+              <label className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-400">
+                Ad-hoc question (SEC filing only)
+              </label>
+              <textarea
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                rows={2}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm placeholder-slate-600 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  onClick={onResearchStream}
+                  disabled={busy}
+                  className="rounded-md bg-gradient-to-r from-indigo-600 to-cyan-600 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-900/30 transition hover:from-indigo-500 hover:to-cyan-500 disabled:opacity-50"
+                >
+                  Run full research →
+                </button>
+                <button
+                  onClick={onQuery}
+                  disabled={busy}
+                  className="rounded-md border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+                >
+                  Query filing
+                </button>
+                {busy && (
+                  <button
+                    onClick={onCancel}
+                    className="rounded-md border border-rose-700 px-4 py-2 text-sm font-medium text-rose-300 hover:bg-rose-900/30"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <AgentProgress states={agents} />
+            </div>
+
+            {status && <p className="mt-3 text-xs text-slate-400">{status}</p>}
+            {meta && (
+              <p className="text-[11px] text-slate-500">
+                run · {(meta.duration_ms / 1000).toFixed(2)}s · $
+                {meta.cost_usd.toFixed(4)}
+              </p>
+            )}
+          </div>
+        </section>
+
+        <ReportPanel result={research} />
+
+        <ChatPanel ticker={ticker} research={research} />
+
+        <QueryResultPanel result={queryResult} />
+
+        <section className="mt-8">
+          <h2 className="mb-2 text-sm font-semibold text-slate-200">
+            Recent reports for{" "}
+            <span className="font-mono text-indigo-300">{ticker}</span>{" "}
+            <span className="font-normal text-slate-500">({companyName(ticker)})</span>
+          </h2>
+          <HistoryPanel ticker={ticker} refreshKey={historyRefresh} />
+        </section>
+
+        <footer className="mt-12 border-t border-slate-900 pt-6 text-center text-[11px] text-slate-600">
+          FinSight is for informational purposes only. Not investment advice. Data from
+          SEC EDGAR, NewsAPI, and Yahoo Finance via yfinance.
+        </footer>
+      </main>
+    </div>
   );
 }

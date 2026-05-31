@@ -3,17 +3,25 @@
   POST /research/{ticker}              run the graph, persist, return report + cost
   GET  /research/{ticker}/stream       same, but emit per-node Server-Sent Events
   GET  /research/history/{ticker}      list recent stored runs
+  POST /research/ask                   conversational follow-up grounded in a prior report
 """
 
-from __future__ import annotations
+# NOTE: intentionally NOT using `from __future__ import annotations` here.
+# slowapi's @limiter.limit wraps each endpoint; under PEP 563 (stringized
+# annotations) FastAPI resolves a handler's annotations against the *wrapper's*
+# __globals__ (slowapi's module, not this one), so a Pydantic body param like
+# `AskRequest` can't be resolved and is misread as a query param → HTTP 422.
+# Real annotation objects sidestep that. See app/tests/test_research_ask.py.
 
 import asyncio
 import json
 import time
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -21,7 +29,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.agents.graph import get_graph, run_research
 from app.config import get_settings
 from app.limiter import limiter
-from app.observability.cost import CostTracker, start_tracking
+from app.observability.cost import CostTracker, record_chat, start_tracking
 from app.observability.logging import get_logger, get_request_id
 from app.persistence.db import list_runs_for_ticker, save_run, session_scope
 from app.schemas.research import (
@@ -86,6 +94,121 @@ class HistoryEntry(BaseModel):
 class HistoryResponse(BaseModel):
     ticker: str
     runs: list[HistoryEntry]
+
+
+# ----- POST /research/ask  (conversational follow-up) -----
+
+
+class ChatTurn(BaseModel):
+    role: str = Field(pattern=r"^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class AskRequest(BaseModel):
+    ticker: str
+    question: str = Field(min_length=2, max_length=2000)
+    context: ResearchResponse | None = None
+    history: list[ChatTurn] = Field(default_factory=list, max_length=20)
+
+
+class AskResponse(BaseModel):
+    answer: str
+    cost_usd: float
+    request_id: str
+
+
+_ASK_SYSTEM = """You are FinSight's analyst assistant. The user has already
+run a multi-agent research report on a public stock. You receive that report
+(SEC filing extracts, recent news sentiment, financial metrics, and a Buy/Hold/Sell
+recommendation) as JSON, plus the user's follow-up question.
+
+Answer in 2-6 sentences, conversational tone, plain English.
+
+Hard rules:
+  • Ground every claim in the JSON context. If something isn't in the context,
+    say so plainly — never invent numbers, headlines, or filings.
+  • This is not personalized investment advice. If the user asks for a
+    prediction or a "should I" decision, frame it as scenario-based reasoning
+    using the provided metrics, and add a one-line disclaimer at the end.
+  • For "if I invest $X" hypotheticals: estimate using the 52-week range
+    midpoint vs current implied price when available, OR cite the recommendation
+    and the metrics that drive it. Show your arithmetic briefly. Always note
+    that past ranges don't guarantee future returns.
+  • Never recommend specific trades, position sizes, or timing.
+  • If context is missing/empty, say "I don't have a fresh report for this
+    ticker yet — run the research first."
+"""
+
+
+@lru_cache(maxsize=1)
+def _ask_client() -> AsyncOpenAI:
+    return AsyncOpenAI(api_key=get_settings().openai_api_key, timeout=60.0)
+
+
+@router.post("/ask", response_model=AskResponse)
+@limiter.limit(lambda: get_settings().rate_limit_research)
+async def ask(request: Request, body: AskRequest) -> AskResponse:
+    ticker = _validate_ticker(body.ticker)
+    tracker = start_tracking()
+    rid = get_request_id()
+
+    settings = get_settings()
+    key = settings.openai_api_key.strip()
+    # Real OpenAI keys start with "sk-" and are well over 20 chars. Catch
+    # placeholder values early so we return a clean 503 instead of bouncing
+    # off the OpenAI SDK.
+    if not key or not key.startswith("sk-") or len(key) < 20:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "OPENAI_API_KEY is missing or set to a placeholder. "
+                "Set a real key (starts with sk-) in the backend .env and restart."
+            ),
+        )
+
+    grounding: dict[str, Any] = {"ticker": ticker}
+    if body.context is not None:
+        grounding["report"] = body.context.model_dump()
+    else:
+        grounding["report"] = None
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": _ASK_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                "RESEARCH CONTEXT (JSON):\n"
+                + json.dumps(grounding, default=str)
+            ),
+        },
+    ]
+    for turn in body.history[-10:]:
+        messages.append({"role": turn.role, "content": turn.content})
+    messages.append({"role": "user", "content": body.question.strip()})
+
+    try:
+        resp = await _ask_client().chat.completions.create(
+            model=settings.llm_model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=500,
+        )
+    except OpenAIError as e:
+        log.exception("ask_openai_failed", extra={"error_type": type(e).__name__})
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM call failed ({type(e).__name__})",
+        ) from e
+
+    record_chat(settings.llm_model, resp)
+    answer = (resp.choices[0].message.content or "").strip() or (
+        "I couldn't generate a response. Try rephrasing your question."
+    )
+    log.info(
+        "ask_completed",
+        extra={"ticker": ticker, "cost_usd": tracker.total_usd},
+    )
+    return AskResponse(answer=answer, cost_usd=tracker.total_usd, request_id=rid)
 
 
 # ----- POST /research/{ticker} -----

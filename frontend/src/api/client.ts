@@ -92,6 +92,24 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AskRequest {
+  ticker: string;
+  question: string;
+  context: ResearchResponse | null;
+  history: ChatTurn[];
+}
+
+export interface AskResponse {
+  answer: string;
+  cost_usd: number;
+  request_id: string;
+}
+
 export const api = {
   health: async () => {
     const res = await fetch(`${BASE_URL}/health`);
@@ -103,6 +121,8 @@ export const api = {
 
   query: (ticker: string, question: string, top_k = 5) =>
     postJson<QueryResponse>("/filings/query", { ticker, question, top_k }),
+
+  ask: (body: AskRequest) => postJson<AskResponse>("/research/ask", body),
 
   research: async (ticker: string): Promise<ResearchEnvelope> => {
     const res = await fetch(`${BASE_URL}/research/${encodeURIComponent(ticker)}`, {
